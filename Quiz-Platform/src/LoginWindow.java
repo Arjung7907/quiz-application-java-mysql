@@ -3,11 +3,6 @@ import java.awt.*;
 import java.sql.*;
 
 public class LoginWindow extends JFrame {
-    private static final String ADMIN_USERNAME = "admin";
-    // Change this to whatever admin password you want.
-    // For better security, store this in a secure config or database in real apps.
-    private static final String ADMIN_PASSWORD = "admin@123";
-
     private JTextField usernameField;
     private JPasswordField passwordField;
 
@@ -47,29 +42,25 @@ public class LoginWindow extends JFrame {
             return;
         }
 
-        // 1) Admin shortcut: if user is "admin" and password matches ADMIN_PASSWORD,
-        // open AdminWindow
-        /*
-         * if (ADMIN_USERNAME.equals(user) && ADMIN_PASSWORD.equals(pass)) {
-         * dispose();
-         * // Open admin interface
-         * new AdminWindow().setVisible(true);
-         * return;
-         * }
-         */
+        // Query username/password and role from DB
+        String sql = "SELECT id, role FROM users WHERE username = ? AND password = ?";
+        try (Connection c = DBConnection.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
 
-        // 2) Regular user login flow
-        String sql = "SELECT id FROM users WHERE username = ? AND password = ?";
-        try (
-                Connection c = DBConnection.getConnection();
-                java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, user);
             ps.setString(2, pass);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     int userId = rs.getInt("id");
+                    String role = rs.getString("role");
                     dispose();
-                    new CategoryWindow(userId, user).setVisible(true);
+                    if ("admin".equalsIgnoreCase(role)) {
+                        // open admin UI for admin role
+                        new AdminWindow().setVisible(true);
+                    } else {
+                        // normal user flow
+                        new CategoryWindow(userId, user).setVisible(true);
+                    }
                 } else {
                     JOptionPane.showMessageDialog(this, "Invalid credentials");
                 }
@@ -88,9 +79,9 @@ public class LoginWindow extends JFrame {
             return;
         }
 
-        String sql = "INSERT INTO users (username, password) VALUES (?, ?)";
+        String sql = "INSERT INTO users (username, password, role) VALUES (?, ?, 'user')";
         try (Connection c = DBConnection.getConnection();
-                java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
+                PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, user);
             ps.setString(2, pass);
             ps.executeUpdate();
@@ -98,5 +89,12 @@ public class LoginWindow extends JFrame {
         } catch (SQLException ex) {
             JOptionPane.showMessageDialog(this, "Register failed: " + ex.getMessage());
         }
+    }
+
+    // optional quick main for testing the login window alone
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new LoginWindow().setVisible(true);
+        });
     }
 }
