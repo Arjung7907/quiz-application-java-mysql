@@ -2,17 +2,12 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * AdminWindow - full CRUD panel for categories and questions (4 options each).
- * Requires DB tables:
- * - categories(id INT PK, name VARCHAR(...))
- * - questions(id INT PK, category_id INT FK, text TEXT)
- * - options(id INT PK, question_id INT FK, text VARCHAR(...), is_correct
- * TINYINT)
- *
- * Also requires DBConnection.getConnection() to return a valid
- * java.sql.Connection.
+ * Requires DB tables: categories, questions, options, and a valid DBConnection.
  */
 public class AdminWindow extends JFrame {
     private JTable categoryTable, questionTable;
@@ -20,6 +15,57 @@ public class AdminWindow extends JFrame {
     private JButton addCatBtn, renameCatBtn, deleteCatBtn;
     private JButton addQBtn, editQBtn, deleteQBtn;
     private JTextArea statusArea;
+
+    // --- Data Models ---
+
+    // Class to hold the details of a single option
+    public static class OptionDetails {
+        private String text;
+        private boolean isCorrect;
+
+        public OptionDetails(String text, boolean isCorrect) {
+            this.text = text;
+            this.isCorrect = isCorrect;
+        }
+
+        public String getText() {
+            return text;
+        }
+
+        public boolean isCorrect() {
+            return isCorrect;
+        }
+    }
+
+    // Class to hold the details of a single question and its options
+    public static class QuestionDetails {
+        private Integer id; // Null if adding a new question
+        private String questionText;
+        private List<OptionDetails> options = new ArrayList<>();
+
+        public QuestionDetails(Integer id, String questionText) {
+            this.id = id;
+            this.questionText = questionText;
+        }
+
+        public Integer getId() {
+            return id;
+        }
+
+        public String getQuestionText() {
+            return questionText;
+        }
+
+        public List<OptionDetails> getOptions() {
+            return options;
+        }
+
+        public void addOption(String text, boolean isCorrect) {
+            options.add(new OptionDetails(text, isCorrect));
+        }
+    }
+
+    // --- Constructor and UI Initialization (No changes here) ---
 
     public AdminWindow() {
         setTitle("Admin - Manage Quiz");
@@ -109,6 +155,8 @@ public class AdminWindow extends JFrame {
         deleteQBtn.addActionListener(e -> deleteQuestion());
     }
 
+    // --- Database Loading Methods ---
+
     // Load categories into table
     private void loadCategories() {
         categoryModel.setRowCount(0);
@@ -124,16 +172,19 @@ public class AdminWindow extends JFrame {
         }
     }
 
-    // Load questions for selected category
+    // Load questions for selected category (Now includes ORDER BY id)
     private void loadQuestionsForSelectedCategory() {
         questionModel.setRowCount(0);
         int row = categoryTable.getSelectedRow();
         if (row < 0)
             return;
         int catId = (Integer) categoryModel.getValueAt(row, 0);
+
+        // FIX: Added ORDER BY id to ensure sequential question listing
+        String sql = "SELECT id, text FROM questions WHERE category_id = ? ORDER BY id ASC";
+
         try (Connection c = DBConnection.getConnection();
-                PreparedStatement ps = c
-                        .prepareStatement("SELECT id, text FROM questions WHERE category_id = ? ORDER BY id")) {
+                PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, catId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -146,7 +197,38 @@ public class AdminWindow extends JFrame {
         }
     }
 
-    // Category CRUD
+    // --- New Data Loading Helper Method ---
+
+    private QuestionDetails getQuestionDetails(int qid) throws SQLException {
+        QuestionDetails details = null;
+        try (Connection c = DBConnection.getConnection()) {
+
+            // 1. Get question text
+            PreparedStatement psQ = c.prepareStatement("SELECT text FROM questions WHERE id = ?");
+            psQ.setInt(1, qid);
+            try (ResultSet rsQ = psQ.executeQuery()) {
+                if (rsQ.next()) {
+                    details = new QuestionDetails(qid, rsQ.getString("text"));
+                } else {
+                    throw new SQLException("Question not found for ID: " + qid);
+                }
+            }
+
+            // 2. Get options
+            PreparedStatement psO = c.prepareStatement(
+                    "SELECT text, is_correct FROM options WHERE question_id = ? ORDER BY id LIMIT 4");
+            psO.setInt(1, qid);
+            try (ResultSet rsO = psO.executeQuery()) {
+                while (rsO.next()) {
+                    details.addOption(rsO.getString("text"), rsO.getInt("is_correct") == 1);
+                }
+            }
+        }
+        return details;
+    }
+
+    // --- Category CRUD (No changes) ---
+    // ... (addCategory, renameCategory, deleteCategory methods remain here) ...
     private void addCategory() {
         String name = JOptionPane.showInputDialog(this, "Enter new category name:");
         if (name == null || name.trim().isEmpty())
@@ -211,7 +293,8 @@ public class AdminWindow extends JFrame {
         }
     }
 
-    // Question CRUD
+    // --- Question CRUD ---
+
     private void deleteQuestion() {
         int row = questionTable.getSelectedRow();
         if (row < 0) {
@@ -235,7 +318,10 @@ public class AdminWindow extends JFrame {
         }
     }
 
-    // Add / Edit question dialog. If qid == null -> add, else edit
+    /**
+     * Add / Edit question dialog. If qid == null -> add, else edit
+     * FIX: Uses QuestionDetails to load/store data.
+     */
     private void openQuestionDialog(Integer qid) {
         int catRow = categoryTable.getSelectedRow();
         if (catRow < 0) {
@@ -267,29 +353,25 @@ public class AdminWindow extends JFrame {
             optPanel.add(row);
         }
 
-        // If editing, load existing question + options
+        // --- LOAD DATA FOR EDIT MODE (Updated Logic) ---
         if (qid != null) {
-            try (Connection c = DBConnection.getConnection()) {
-                PreparedStatement ps = c.prepareStatement("SELECT text FROM questions WHERE id = ?");
-                ps.setInt(1, qid);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next())
-                        qText.setText(rs.getString("text"));
-                }
-                ps = c.prepareStatement(
-                        "SELECT text, is_correct FROM options WHERE question_id = ? ORDER BY id LIMIT 4");
-                ps.setInt(1, qid);
-                try (ResultSet rs = ps.executeQuery()) {
-                    int i = 0;
-                    while (rs.next() && i < 4) {
-                        opts[i].setText(rs.getString("text"));
-                        correctBtns[i].setSelected(rs.getInt("is_correct") == 1);
-                        i++;
+            try {
+                QuestionDetails details = getQuestionDetails(qid);
+                qText.setText(details.getQuestionText());
+
+                int i = 0;
+                for (OptionDetails opt : details.getOptions()) {
+                    if (i < 4) {
+                        opts[i].setText(opt.getText());
+                        correctBtns[i].setSelected(opt.isCorrect());
                     }
+                    i++;
                 }
             } catch (SQLException ex) {
-                status("Error loading question: " + ex.getMessage());
+                status("Error loading question for edit: " + ex.getMessage());
                 ex.printStackTrace();
+                dlg.dispose(); // Close dialog on failure
+                return;
             }
         }
 
@@ -333,6 +415,7 @@ public class AdminWindow extends JFrame {
                 conn.setAutoCommit(false);
                 int qIdToUse;
                 if (qid == null) {
+                    // --- INSERT (ADD QUESTION) ---
                     PreparedStatement ps = conn.prepareStatement(
                             "INSERT INTO questions(category_id, text) VALUES(?, ?)", Statement.RETURN_GENERATED_KEYS);
                     ps.setInt(1, catId);
@@ -345,16 +428,22 @@ public class AdminWindow extends JFrame {
                             throw new SQLException("Failed to retrieve question id");
                     }
                 } else {
+                    // --- UPDATE (EDIT QUESTION) ---
+                    qIdToUse = qid;
+                    // 1. Update question text
                     PreparedStatement ps = conn.prepareStatement("UPDATE questions SET text = ? WHERE id = ?");
                     ps.setString(1, qStr);
                     ps.setInt(2, qid);
                     ps.executeUpdate();
-                    qIdToUse = qid;
+
+                    // 2. Delete old options (since we don't know which options map to which option
+                    // ID)
                     PreparedStatement psDel = conn.prepareStatement("DELETE FROM options WHERE question_id = ?");
                     psDel.setInt(1, qid);
                     psDel.executeUpdate();
                 }
 
+                // 3. Insert 4 new options (for both ADD and EDIT)
                 PreparedStatement psOpt = conn
                         .prepareStatement("INSERT INTO options(question_id, text, is_correct) VALUES(?, ?, ?)");
                 for (int i = 0; i < 4; i++) {
